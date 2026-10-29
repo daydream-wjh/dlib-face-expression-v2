@@ -70,9 +70,13 @@
 ### PSO 调参（`pso.py`）
 
 - 目标函数：给定 `(C, gamma)` 训练 `SVC(kernel='rbf')`，返回 **`1 - 测试集准确率`**（最小化错误率）；
-- 数据集：`数据.xlsx` 的第 0–4 列特征 + 第 6 列标签，`train_test_split(test_size=0.2, random_state=42)`；
+- **逐粒子评估**：PySwarms 一次性把整个粒子矩阵（`shape=(n_particles, dimensions)`）传给目标函数，所以函数内部 `np.atleast_2d` 归一化后逐行遍历、对每个粒子拟合一次 SVC，最后返回长度等于粒子数的**代价数组**（先前 `C = params[0]` 取到的是「第一个粒子的参数向量」，`SVC(C=array)` 必崩，已修正；同时兼容传入单个 1-D 参数向量的调用方式）；
+- 数据集：`数据.xlsx` 的第 0–4 列特征 + 第 6 列标签，`train_test_split(test_size=0.2, random_state=42)`；数据和切分都在目标函数外只做一次；
 - 粒子群：`pyswarms.single.GlobalBestPSO(n_particles=10, dimensions=2, options={'c1':0.5,'c2':0.3,'w':0.9}, bounds=([0.1,0.1],[100,100]))`，`iters=100`；
-- 搜索空间：`C ∈ [0.1, 100]`、`gamma ∈ [0.1, 100]`。
+- 搜索空间：`C ∈ [0.1, 100]`、`gamma ∈ [0.1, 100]`；
+- 结果：`optimizer.optimize()` 返回的是 **`(best_cost, best_pos)` 元组**（旧代码直接把整个元组赋给 `c`，再用未定义的 `g` 打印，末尾必 `NameError`），现在解包后打印一行：
+  `最佳参数: C=<C>, gamma=<gamma>, 最优得分=<best_cost>`
+  其中最优得分就是**最低的分类错误率**（`1 - 准确率`），不是准确率。
 
 ### 评估指标
 
@@ -81,6 +85,12 @@
 ```
 十倍交叉验证的准确率为 <acc>
 KNN：在训练集上分类准确率为 <best_score_> / 最好的超参数为 <best_params> / 在测试集上的分类准确率为 <acc>
+```
+
+`pso.py` 只在最后打印一行（见上节），`<C>` / `<gamma>` 保留 4 位小数：
+
+```
+最佳参数: C=<C>, gamma=<gamma>, 最优得分=<best_cost>
 ```
 
 ### 仓库内已有模型文件（核对结果）
@@ -163,7 +173,7 @@ pip install dlib opencv-python numpy pandas openpyxl scikit-learn joblib xlwt py
 - **`face_pd.py`**：模型推理末梢，`joblib.load("knn_model.pkl")` → `predict([[a,b,c,dd,e]])` → `emo[kll-1]` 上屏（`emo = ['angry','sadness','nature','nature','happy','normal','surprise']`）。
 - **`data.py`**：把 `learning_face.py` 的特征计算复制到"单张图 → 一行特征"的场景，想用 `xlwt` 建 `mysheet` 写成训练表；实际未完成——路径是 Windows 绝对路径，`sheet.write(...)` 被注释，`book.save()` 没传文件名。属于留档草稿。
 - **`SVM.py` / `KNN.py` / `DecisionTreeClassifier.py` / `LogisticRegression.py`**：四个独立训练脚本，互不 import，各自读 xlsx、评估、`joblib.dump`，可单独运行对比。
-- **`pso.py`**：独立调参脚本，把 `SVC` 的 `C`/`gamma` 交给 pyswarms 优化，不保存模型，只打印最优参数。
+- **`pso.py`**：独立调参脚本，把 `SVC` 的 `C`/`gamma` 交给 pyswarms 优化，不保存模型，只打印最优参数（`最佳参数: C=..., gamma=..., 最优得分=...`）；不再 `from sklearn.datasets import load_iris`（导入了但从未使用，已删除）。
 
 ## 快速开始
 
@@ -197,7 +207,13 @@ cd face
 python pso.py
 ```
 
-跑 100 次迭代 × 10 个粒子（每次都要拟合一个 RBF-SVC），耗时取决于机器；结束时会打印最优参数组合（末尾还有一处 `NameError`，见"已知问题"）。
+跑 100 次迭代 × 10 个粒子（每次迭代里每个粒子都要拟合一个 RBF-SVC），耗时取决于机器；结束时打印一行最优组合：
+
+```
+最佳参数: C=<C>, gamma=<gamma>, 最优得分=<best_cost>
+```
+
+`best_cost` 是**最低分类错误率**（`1 - 测试集准确率`），例如 `0.0450` 表示测试集准确率约 95.5%。脚本不落盘模型，要用这组参数得自己把 `C` / `gamma` 填到 `SVM.py` 里重训。注意目标函数用的是测试集（没有独立验证集），最优 `C`/`gamma` 有乐观偏差。
 
 ### 4. 从图片批量造特征表
 
@@ -205,16 +221,31 @@ python pso.py
 
 ## 已知问题
 
-- **`data.py` 是跑不通的草稿**：硬编码 Windows 路径 `D:\desktop\-Dlib--2.0\数据集\...`；`book.save()` 缺参数会 `TypeError`；`sheet.write(...)` 全被注释，即使不报错也不会写入任何数据；只处理单张图，没有目录遍历。它更多是"特征定义的可执行说明"。
-- **`svm_model.pkl` 里不是 SVM**：文件内是 `sklearn.linear_model._logistic`（1.1 KB），因为 `LogisticRegression.py` 也用同一个文件名 `joblib.dump`，把 SVM 的产物覆盖了。要用真正的 SVM 模型，得给两个脚本改成不同文件名后重跑。
+> 保留历史问题原文；已修掉的条目在末尾标 **（已修复）** 并说明新做法，未标记的仍然存在。汇总见文末「修复记录」。
+
+- **`data.py` 是跑不通的草稿**：硬编码 Windows 路径 `D:\desktop\-Dlib--2.0\数据集\...`；`book.save()` 缺参数会 `TypeError`；`sheet.write(...)` 全被注释，即使不报错也不会写入任何数据；只处理单张图，没有目录遍历。它更多是"特征定义的可执行说明"。（未修复）
+- **`svm_model.pkl` 里不是 SVM**：文件内是 `sklearn.linear_model._logistic`（1.1 KB），因为 `LogisticRegression.py` 也用同一个文件名 `joblib.dump`，把 SVM 的产物覆盖了。要用真正的 SVM 模型，得给两个脚本改成不同文件名后重跑。（未修复）
 - **特征列数在脚本之间不一致**：`SVM.py` / `DecisionTreeClassifier.py` 用 6 个特征（含 `brow_k`），`KNN.py` / `LogisticRegression.py` 只用 5 个（`df.columns[0:5]` / `usecols="A:E"`）；而推理端 `face_pd.py` 也是 5 个。想横向比准确率，前提是先把输入维度统一。
-- **训练/测试数据混用**：`SVM.py` 在 `test_dataset2.xlsx` 上做十折交叉验证并据此保存模型（等于在测试集上训练），而 KNN 用的是 `数据.xlsx`（728 行、只有 5 类）。四个脚本的训练集不同、样本量差 28 倍，脚本里打印的准确率**不能直接横向比较**。
-- **`数据.xlsx` 缺两个类别**：标签只有 `1, 2, 5, 6, 7`，没有 `3（恶心）`、`4（害怕）`，所以用这份数据训出的 `knn_model.pkl` 永远不会输出这两个类别；而 `face_pd.py` 的 `emo` 表仍是 7 项，`emo[2]`/`emo[3]` 都是 `'nature'` 占位。
-- **标签语义与 `说明.txt` 不一致**：说明写 `2.蔑视 / 3.恶心 / 4.害怕 / 6.悲伤`，`face_pd.py` 的 `emo` 却是 `sadness / nature / nature / normal`，两套定义没有对齐。
-- **`pso.py` 结尾会崩**：`print("最佳参数组合：", c, g)` 里的 `g` 未定义，`optimizer.optimize()` 返回的 `(best_cost, best_pos)` 已赋给 `c`，跑到最后一行必 `NameError`；目标函数里 `accuracy` 用的是测试集，等于用测试集当优化目标（没有独立验证集），最优 `C/gamma` 有乐观偏差。
-- **模型每帧重复加载**：`face_pd.py` 的 `joblib.load("knn_model.pkl")` 在主循环里每帧每个人脸都执行一次，应从磁盘读一次后缓存。
-- **`cv2.waitKey` 调了三次**（30 / 100 / 100），按键可能被前一次调用吃掉，`S`/`ESC` 响应不稳定。
-- **`.pkl` 版本兼容**：模型由老版 scikit-learn 序列化，新版加载会出现 `InconsistentVersionWarning`，极端情况下列顺序/属性不匹配会导致预测异常。
-- **大文件入库**：`shape_predictor_68_face_landmarks.dat`（约 96 MB）与 6 份 xlsx 全部进 Git，未用 Git LFS。
-- **`main.py` 里的 `import data` 是死导入，但仍有副作用**：`data` 模块从未被调用，可它顶部 `import xlwt`，若没装 `xlwt`，连实时识别都起不来（`ModuleNotFoundError: xlwt`），装完也会白白拖慢启动。
-- **无 `requirements.txt`**、`.idea/` 工程文件入库。
+  **（`pso.py` 这一处仍在，未修）**：`pso.py` 读的仍是 `df.columns[0:5]`（5 个），而同目录 `SVM.py` 用 `0:6`（6 个，与 `数据集/说明.txt` 的「6 个特征 + 标签」一致）。这处不一致**保留未改**，改 `pso.py` 的列会连带改变它的搜索空间，属于另一次改动。
+- **训练/测试数据混用**：`SVM.py` 在 `test_dataset2.xlsx` 上做十折交叉验证并据此保存模型（等于在测试集上训练），而 KNN 用的是 `数据.xlsx`（728 行、只有 5 类）。四个脚本的训练集不同、样本量差 28 倍，脚本里打印的准确率**不能直接横向比较**。（未修复）
+- **`数据.xlsx` 缺两个类别**：标签只有 `1, 2, 5, 6, 7`，没有 `3（恶心）`、`4（害怕）`，所以用这份数据训出的 `knn_model.pkl` 永远不会输出这两个类别；而 `face_pd.py` 的 `emo` 表仍是 7 项，`emo[2]`/`emo[3]` 都是 `'nature'` 占位。（未修复）
+- **标签语义与 `说明.txt` 不一致**：说明写 `2.蔑视 / 3.恶心 / 4.害怕 / 6.悲伤`，`face_pd.py` 的 `emo` 却是 `sadness / nature / nature / normal`，两套定义没有对齐。（未修复）
+- **`pso.py` 结尾会崩**：`print("最佳参数组合：", c, g)` 里的 `g` 未定义，`optimizer.optimize()` 返回的 `(best_cost, best_pos)` 已赋给 `c`，跑到最后一行必 `NameError`；目标函数里 `accuracy` 用的是测试集，等于用测试集当优化目标（没有独立验证集），最优 `C/gamma` 有乐观偏差。**（崩溃已修复，乐观偏差仍在）** 末行改为解包 `(best_cost, best_pos)` 后打印 `最佳参数: C=<C>, gamma=<gamma>, 最优得分=<best_cost>`；"用测试集当优化目标"这一点没动。
+- **PSO 目标函数把参数向量当标量用**（这轮额外发现的 bug）：PySwarms 传进来的是 `(n_particles, dimensions)` 矩阵，原代码 `C = params[0]` 实际取到的是「第一个粒子的 `(C, gamma)` 向量」，`SVC(C=array(...))` 会直接抛错。**（已修复）** 目标函数改为 `np.atleast_2d` 归一化后**逐粒子遍历**，每个粒子单独拟合 SVC，返回长度等于粒子数的代价数组（同时兼容 1-D 单向量调用）。
+- **模型每帧重复加载**：`face_pd.py` 的 `joblib.load("knn_model.pkl")` 在主循环里每帧每个人脸都执行一次，应从磁盘读一次后缓存。（未修复）
+- **`cv2.waitKey` 调了三次**（30 / 100 / 100），按键可能被前一次调用吃掉，`S`/`ESC` 响应不稳定。（未修复）
+- **`.pkl` 版本兼容**：模型由老版 scikit-learn 序列化，新版加载会出现 `InconsistentVersionWarning`，极端情况下列顺序/属性不匹配会导致预测异常。（未修复）
+- **大文件入库**：`shape_predictor_68_face_landmarks.dat`（约 96 MB）与 6 份 xlsx 全部进 Git，未用 Git LFS。（未修复）
+- **`main.py` 里的 `import data` 是死导入，但仍有副作用**：`data` 模块从未被调用，可它顶部 `import xlwt`，若没装 `xlwt`，连实时识别都起不来（`ModuleNotFoundError: xlwt`），装完也会白白拖慢启动。（未修复）
+- **无 `requirements.txt`**、`.idea/` 工程文件入库。（未修复）
+
+## 修复记录
+
+| 文件 | 修了什么 | 现在的做法 |
+| --- | --- | --- |
+| `face/pso.py` | 末行 `print(..., c, g)` 里 `g` 未定义，必 `NameError` | 删除该行，改为解包后打印 `最佳参数: C=..., gamma=..., 最优得分=...` |
+| `face/pso.py` | `optimizer.optimize()` 返回 `(best_cost, best_pos)` 却被整体赋给 `c`，拿不到最优参数 | `best_cost, best_pos = result`（兼容只返回 `best_cost` 的旧版本，回退取 `optimizer.swarm.best_pos`），按 `best_pos[0]=C`、`best_pos[1]=gamma` 输出 |
+| `face/pso.py` | 目标函数 `C = params[0]` 取到整个粒子向量，`SVC(C=array)` 必崩 | 逐粒子遍历、返回代价数组，兼容单向量调用 |
+| `face/pso.py` | `from sklearn.datasets import load_iris` 未使用 | 删除 |
+| `face/pso.py` | 特征列 `0:5` 与 `SVM.py` 的 `0:6` 不一致 | **保留未改**，代码里加了注释说明属另一处改动 |
+
