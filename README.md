@@ -2,7 +2,7 @@
 
 基于 **Dlib** 的人脸表情识别 2.0：沿用 1.0 的"68 关键点 → 几何特征"路线，把特征整理成表格数据集，并补齐**多分类器横向对比**（SVM / KNN / 决策树 / 逻辑回归）与 **PSO 粒子群自动调参**，训练好的模型用 `joblib` 落盘，实时识别端加载 KNN 模型上屏。
 
-> 1.0 是 2019 年四人小组课程项目（已申请软件著作权），本仓库是其后续重构版本；改造前的原版见 `-Dlib-` 仓库。
+> 1.0 是 2019 年四人小组课程项目（已申请软件著作权），本仓库是其后续重构版本；改造前的原版见 [`dlib-face-expression`](https://github.com/daydream-wjh/dlib-face-expression) 仓库。
 
 ## 项目简介
 
@@ -137,7 +137,7 @@ pip install dlib opencv-python numpy pandas openpyxl scikit-learn joblib xlwt py
 ## 目录结构
 
 ```
--Dlib--2.0/
+dlib-face-expression-v2/
 ├── README.md
 ├── .gitignore
 ├── .idea/                                     # PyCharm 工程文件
